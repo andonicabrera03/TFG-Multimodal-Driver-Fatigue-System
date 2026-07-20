@@ -1,12 +1,12 @@
 """
 00_Analisis_Dataset.py
 
-Script para la auditoría y análisis estadístico del dataset UTA-RLDD.
-Recorre la jerarquía de directorios generada tras el preprocesamiento 
-(Fold -> Sujeto -> Clase), cuantifica las muestras válidas por cada estado 
-de fatiga (KSS) y genera una gráfica de balanceo de clases.
-
 Autor: Andoni Cabrera Fernández
+
+Script para el análisis estadístico del dataset UTA-RLDD.
+Recorre la jerarquía de directorios generada tras el preprocesamiento 
+(Fold -> Sujeto -> Clase), cuantifica las muestras válidas por cada nivel 
+de vigilancia (escala KSS) y genera un gráfico de balanceo de clases.
 """
 
 import os
@@ -18,25 +18,25 @@ def main():
     # =========================================================================
     # CONFIGURACIÓN DEL ENTORNO
     # =========================================================================
-    # TODO: Configurar con la ruta local absoluta o relativa del dataset
+    # Configurar con la ruta del dataset
     ruta_salida_base = r""  
     nombre_grafico = "descripcion_dataset.png"
 
-    # Contadores de muestras por estado fisiológico
-    clase_0 = 0   # Alerta base (KSS 1-3)
+    # Contadores de muestras por nivel de vigilancia
+    clase_0 = 0   # Alerta (KSS 1-3)
     clase_5 = 0   # Baja Vigilancia (KSS 6-7)
-    clase_10 = 0  # Somnolencia Severa / Micro-sueño (KSS 8-9)
+    clase_10 = 0  # Somnolencia (KSS 8-9)
 
-    print("Iniciando auditoría topológica de muestras extraídas...")
+    print("Iniciando lectura de directorios y conteo de muestras...")
 
-    # Validación de seguridad: Comprobar que la ruta configurada existe
+    # Comprobar que la ruta configurada existe
     if not ruta_salida_base or not os.path.exists(ruta_salida_base):
-        print("\n[ERROR] Directorio no encontrado o no configurado.")
+        print("\n Directorio no encontrado o no configurado.")
         print("Por favor, verifica la variable 'ruta_salida_base' antes de ejecutar.")
         return
 
     # =========================================================================
-    # EXTRACCIÓN DE MÉTRICAS POBLACIONALES
+    # EXTRACCIÓN DE RESULTADOS
     # =========================================================================
     # Jerarquía esperada: ruta_salida_base/Fold_X/Sujeto_Y/Clase_Z/*.jpg
     for fold in os.listdir(ruta_salida_base):
@@ -47,7 +47,7 @@ def main():
                 ruta_sujeto = os.path.join(ruta_fold, sujeto)
                 
                 if os.path.isdir(ruta_sujeto):
-                    # Contabilización mediante búsqueda de patrones (.jpg)
+                    # Conteo de muestras por clase
                     clase_0 += len(glob.glob(os.path.join(ruta_sujeto, "Clase_0", "*.jpg")))
                     clase_5 += len(glob.glob(os.path.join(ruta_sujeto, "Clase_5", "*.jpg")))
                     clase_10 += len(glob.glob(os.path.join(ruta_sujeto, "Clase_10", "*.jpg")))
@@ -58,7 +58,7 @@ def main():
     # RESUMEN ESTADÍSTICO EN CONSOLA
     # =========================================================================
     print("\n" + "=" * 50)
-    print(" RESULTADOS DE LA AUDITORÍA DEL DATASET (UTA-RLDD)")
+    print(" RESULTADOS DEL ANÁLISIS DEL DATASET (UTA-RLDD)")
     print("=" * 50)
     print(f" Total Clase 0 (Alerta base):         {clase_0:,}".replace(',', '.'))
     print(f" Total Clase 5 (Baja Vigilancia):     {clase_5:,}".replace(',', '.'))
@@ -68,7 +68,7 @@ def main():
     print("=" * 50 + "\n")
 
     # =========================================================================
-    # GENERACIÓN DEL GRÁFICO DE DISTRIBUCIÓN
+    # GENERACIÓN DEL GRÁFICO
     # =========================================================================
     if total > 0:
         print(f"Generando gráfico de balanceo de clases: '{nombre_grafico}'...")
@@ -96,7 +96,7 @@ def main():
         plt.tight_layout()
         plt.savefig(nombre_grafico, dpi=300)
         
-        print("Proceso finalizado correctamente. Gráfico exportado con éxito.")
+        print("Proceso finalizado correctamente. Gráfico exportado.")
     else:
         print("No se han detectado imágenes en los subdirectorios. El gráfico no fue generado.")
 

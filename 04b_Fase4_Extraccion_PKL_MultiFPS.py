@@ -1,15 +1,17 @@
 """
 04b_Fase4_Extraccion_PKL_MultiFPS.py
 
-Script para la extracción predictiva (offline) a prueba de fallos.
-Implementa el paradigma de "Redes Expertas Desacopladas" (Fase 4). 
-Utiliza la malla topológica de MediaPipe para aislar los ojos y la boca,
-y ejecuta inferencia en CPU utilizando modelos MobileNetV2 cuantizados a 
-TFLite (INT8/Float16) para evaluar la oclusión palpebral y los bostezos.
+Autor: Andoni Cabrera Fernández
 
-Se procesan y guardan los tensores a 30, 15, 5 y 1 FPS.
-Incluye sistema de Checkpoints temporales para guardar automáticamente el 
-progreso por vídeo y evitar la pérdida de datos en ejecuciones largas.
+Script para la extracción de predicciones (offline) y almacenamiento de resultados.
+Implementa la ejecución de los modelos convolucionales independientes (Fase 4). 
+Utiliza la malla facial de MediaPipe para localizar los ojos y la boca,
+y ejecuta la inferencia en CPU utilizando modelos MobileNetV2 cuantizados a 
+TFLite (INT8/Float16) para estimar la probabilidad de oclusión palpebral y bostezo.
+
+Se procesan y almacenan las predicciones a 30, 15, 5 y 1 FPS.
+Implementa el guardado periódico de resultados (checkpointing) por vídeo para 
+permitir la reanudación del proceso y evitar la pérdida de datos.
 """
 
 import cv2
@@ -89,7 +91,7 @@ INDICES_BOCA = [78, 191, 80, 81, 82, 13, 312, 311, 310, 415, 308, 324, 318, 402,
 def predecir_tflite(interprete, input_details, output_details, tensor_input):
     """
     Ejecuta el grafo computacional de TFLite con el tensor de entrada
-    y devuelve la probabilidad predictiva (Logit).
+    y devuelve la probabilidad predictiva.
     """
     interprete.set_tensor(input_details['index'], tensor_input)
     interprete.invoke()
@@ -98,8 +100,8 @@ def predecir_tflite(interprete, input_details, output_details, tensor_input):
 
 def extraer_roi_preprocesada(img_rgb, landmarks, indices, w, h, margen_x, margen_y):
     """
-    Aísla una sub-región geométrica a partir de las coordenadas de los landmarks,
-    aplica un margen de seguridad dinámico y normaliza la matriz para la inferencia.
+    Aísla una sub-región a partir de los puntos faciales (landmarks),
+    aplica un margen de recorte y normaliza la matriz para la inferencia.
     """
     x_coords = [int(landmarks[i].x * w) for i in indices]
     y_coords = [int(landmarks[i].y * h) for i in indices]
@@ -114,7 +116,7 @@ def extraer_roi_preprocesada(img_rgb, landmarks, indices, w, h, margen_x, margen
         
     roi_resized = cv2.resize(roi, (224, 224))
     
-    # Pre-procesamiento análogo a MobileNetV2 (Normalización [-1, 1])
+    # Preprocesamiento de entrada para MobileNetV2 (Normalización [-1, 1])
     roi_float = roi_resized.astype(np.float32)
     roi_preprocesada = (roi_float / 127.5) - 1.0
     
@@ -126,7 +128,7 @@ def extraer_roi_preprocesada(img_rgb, landmarks, indices, w, h, margen_x, margen
 total_videos_procesados = 0
 total_frames_analizados = 0
 
-print("Iniciando Pipeline Robusto de Extracción Multimodal con TFLite...\n")
+print("Iniciando extracción de predicciones con TFLite...\n")
 
 if ruta_base_dataset:
     carpetas_fold = sorted([f for f in os.listdir(ruta_base_dataset) if f.startswith("Fold")])
@@ -144,10 +146,10 @@ if ruta_base_dataset:
                 nombre_video = os.path.basename(ruta_video)
                 clase_real = int(nombre_video.split('.')[0])
                 
-                # Checkpointing: Ignoramos vídeos ya procesados exitosamente
+                # Checkpoint: comprobación de vídeos ya procesados
                 ruta_ckpt = os.path.join(ruta_checkpoints, f"{fold}_{sujeto}_{nombre_video}_multi_fps.pkl")
                 if os.path.exists(ruta_ckpt):
-                    print(f"[SKIP] El vídeo {nombre_video} ya fue procesado. Cargando desde caché...")
+                    print(f"[INFO] Omitiendo vídeo {nombre_video} -> Archivo ya existente.")
                     continue
                 
                 print(f"-> Procesando: {fold} | Sujeto {sujeto} | Video {nombre_video}")
@@ -156,16 +158,16 @@ if ruta_base_dataset:
                 fps_video = cap.get(cv2.CAP_PROP_FPS)
                 if fps_video <= 0: fps_video = 30
                 
-                # Cálculo de saltos de fotogramas para evaluación Multi-FPS
+                # Cálculo de submuestreo para evaluación a múltiples frecuencias (FPS)
                 salto_15fps = max(1, int(fps_video / 15))
                 salto_5fps = max(1, int(fps_video / 5))
                 salto_1fps = max(1, int(fps_video / 1))
                 
-                # Contenedores temporales por frecuencia de muestreo
+                # Estructuras de datos temporales por frecuencia de muestreo
                 frames_30fps, frames_15fps, frames_5fps, frames_1fps = [], [], [], []
                 
                 num_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-                if num_frames <= 0: num_frames = 1000 # Estimación segura
+                if num_frames <= 0: num_frames = 1000 # Valor por defecto si no se puede leer la longitud
                 
                 frame_count = 0
                 
@@ -175,7 +177,7 @@ if ruta_base_dataset:
                         if not ret:
                             break
                             
-                        # Corrección cromática al espacio RGB nativo
+                        # Conversión al espacio RGB
                         img_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
                         
                         mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=img_rgb)
@@ -185,18 +187,18 @@ if ruta_base_dataset:
                             landmarks = resultado.face_landmarks[0]
                             h, w, _ = frame.shape
                             
-                            # Extracción de sub-tensores
+                            # Extracción de regiones de interés (ROI)
                             tensor_ojo_izq = extraer_roi_preprocesada(img_rgb, landmarks, INDICES_OJO_IZQ, w, h, 15, 15)
                             tensor_ojo_der = extraer_roi_preprocesada(img_rgb, landmarks, INDICES_OJO_DER, w, h, 15, 15)
                             tensor_boca = extraer_roi_preprocesada(img_rgb, landmarks, INDICES_BOCA, w, h, 20, 20)
                             
-                            # Inferencia en caso de extracción exitosa
+                            # Inferencia
                             if tensor_ojo_izq is not None and tensor_ojo_der is not None and tensor_boca is not None:
                                 prob_izq = predecir_tflite(interpreter_ojos, input_details_ojos, output_details_ojos, tensor_ojo_izq)
                                 prob_der = predecir_tflite(interpreter_ojos, input_details_ojos, output_details_ojos, tensor_ojo_der)
                                 prob_boca = predecir_tflite(interpreter_boca, input_details_boca, output_details_boca, tensor_boca)
                                 
-                                # Consolidación heurística (Peor caso ocular)
+                                # Criterio conservador: se selecciona la mayor probabilidad de cierre ocular
                                 prob_ojo_cerrado = float(max(prob_izq[1], prob_der[1]))
                                 prob_bostezo = float(prob_boca[1])
                                 
@@ -210,7 +212,7 @@ if ruta_base_dataset:
                                     'prob_bostezo': prob_bostezo
                                 }
                                 
-                                # Clasificación y almacenamiento temporal por tasa FPS
+                                # Clasificación y almacenamiento temporal por tasa de muestreo
                                 frames_30fps.append(fila)
                                 
                                 if frame_count % salto_15fps == 0:
@@ -229,7 +231,7 @@ if ruta_base_dataset:
                 
                 cap.release()
                 
-                # Salvaguarda del estado (Checkpoint persistente)
+                # Almacenamiento de resultados intermedios
                 diccionario_resultados = {
                     '30fps': frames_30fps,
                     '15fps': frames_15fps,
@@ -264,7 +266,7 @@ if ruta_salida_base:
             datos_totales_5fps.extend(datos_video['5fps'])
             datos_totales_1fps.extend(datos_video['1fps'])
 
-    print("\nGuardando matrices de inferencia consolidadas...")
+    print("\nGuardando predicciones consolidadas...")
     with open(os.path.join(ruta_salida_base, 'datos_TFLITE_30fps.pkl'), 'wb') as f:
         pickle.dump(datos_totales_30fps, f)
     with open(os.path.join(ruta_salida_base, 'datos_TFLITE_15fps.pkl'), 'wb') as f:
@@ -275,7 +277,7 @@ if ruta_salida_base:
         pickle.dump(datos_totales_1fps, f)
 
     print("="*45)
-    print("¡PROCESO MULTIMODAL FINALIZADO CON ÉXITO!")
-    print(f"Vídeos totales extraídos: {total_videos_procesados}")
-    print(f"Tensores inferidos:       {total_frames_analizados}")
+    print("¡EXTRACCIÓN FINALIZADA!")
+    print(f"Vídeos procesados:          {total_videos_procesados}")
+    print(f"Fotogramas inferidos:       {total_frames_analizados}")
     print("="*45)
